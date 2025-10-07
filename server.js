@@ -77,3 +77,52 @@ app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`YesNo MCP Server (crypto-random) listening on port ${PORT}`);
 });
+
+// --- MCP-compatible SSE endpoint ---
+app.get("/sse", (req, res) => {
+  // SSE (Server-Sent Events) ヘッダー設定
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  // ツール定義（ChatGPTにこのツールがあると通知）
+  const toolDefinition = {
+    type: "tools",
+    data: [
+      {
+        name: "yesno",
+        description: "Return a random yes or no (crypto-secure).",
+        input_schema: {
+          type: "object",
+          properties: {
+            prompt: {
+              type: "string",
+              description: "The user's question or text input."
+            }
+          },
+          required: ["prompt"]
+        }
+      }
+    ]
+  };
+
+  // 最初にツール定義を送信
+  res.write(`event: tools\ndata: ${JSON.stringify(toolDefinition)}\n\n`);
+
+  // イベントリスナー: ChatGPT側から tool call が届いた場合に yes/no を返す
+  req.on("close", () => {
+    console.log("SSE connection closed.");
+  });
+});
+
+// --- Tool invocation endpoint (called by ChatGPT MCP) ---
+app.post("/invocations", express.json(), (req, res) => {
+  const { name, arguments: args } = req.body;
+  if (name === "yesno") {
+    const prompt = args?.prompt || "";
+    const answer = Math.random() < 0.5 ? "yes" : "no";
+    res.json({ answer, prompt });
+  } else {
+    res.status(400).json({ error: "Unknown tool" });
+  }
+});
