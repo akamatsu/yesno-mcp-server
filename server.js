@@ -1,8 +1,8 @@
 // server.js
 // YesNo MCP Server — crypto-random yes/no + MCP(Streamable HTTP via SSE)
-// v2.7.3: Add support for MCP protocol version 2025-06-18 (latest spec),
-//         fix notification handling (202 Accepted), request logging,
-//         POST / endpoint for ChatGPT, trailing slash support
+// v2.8.0: FIX: Change input_schema to inputSchema (camelCase per MCP spec),
+//         support MCP protocol version 2025-06-18, fix notification handling,
+//         request logging, POST / endpoint for ChatGPT
 "use strict";
 
 const express = require("express");
@@ -49,7 +49,7 @@ app.get("/", (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
     name: "YesNo MCP Server",
-    version: "2.7.3",
+    version: "2.8.0",
     mode: "crypto-random",
     transport: "streamable-http (POST /)",
     endpoints: {
@@ -215,7 +215,7 @@ function handleMcp(req, res) {
       responses.push(
         rpcResult(id, {
           protocolVersion: useVersion,
-          serverInfo: { name: "yesno-mcp", version: "2.7.3" },
+          serverInfo: { name: "yesno-mcp", version: "2.8.0" },
           capabilities: { tools: { list: true, call: true } },
         })
       );
@@ -229,7 +229,7 @@ function handleMcp(req, res) {
             {
               name: "yesno",
               description: "Return a cryptographically random yes or no.",
-              input_schema: {
+              inputSchema: {
                 type: "object",
                 properties: {
                   prompt: {
@@ -239,7 +239,6 @@ function handleMcp(req, res) {
                   },
                 },
                 required: ["prompt"],
-                additionalProperties: false,
               },
             },
           ],
@@ -305,6 +304,6 @@ app.use((req, res) => {
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
   console.log(
-    `✅ YesNo MCP Server v2.7.3 (MCP 2025-06-18 support) listening on ${PORT}`
+    `✅ YesNo MCP Server v2.8.0 (inputSchema fix - MCP spec compliant) listening on ${PORT}`
   );
 });
