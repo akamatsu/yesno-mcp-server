@@ -38,6 +38,11 @@ app.get("/healthz", (_req, res) => {
   res.status(200).json({ status: "ok", uptime: process.uptime() });
 });
 
+// ChatGPT MCP client sometimes POSTs /healthz first — handle it gracefully
+app.post("/healthz", (_req, res) => {
+  res.status(200).json({ status: "ok", method: "POST", uptime: process.uptime() });
+});
+
 app.get("/", (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
