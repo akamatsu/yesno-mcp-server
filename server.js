@@ -1,8 +1,8 @@
 // server.js
 // YesNo MCP Server — crypto-random yes/no + MCP(Streamable HTTP via SSE)
-// v2.7.2: Fix notification handling (202 Accepted for notifications/initialized),
-//         add request logging, POST / endpoint for ChatGPT, trailing slash support,
-//         legacy SSE at /sse, CORS preflight, initialize(), fast keep-alive
+// v2.7.3: Add support for MCP protocol version 2025-06-18 (latest spec),
+//         fix notification handling (202 Accepted), request logging,
+//         POST / endpoint for ChatGPT, trailing slash support
 "use strict";
 
 const express = require("express");
@@ -49,7 +49,7 @@ app.get("/", (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
     name: "YesNo MCP Server",
-    version: "2.7.2",
+    version: "2.7.3",
     mode: "crypto-random",
     transport: "streamable-http (POST /)",
     endpoints: {
@@ -78,7 +78,14 @@ app.post("/", (req, res) => {
   console.log("Headers:", JSON.stringify(req.headers, null, 2));
   console.log("Body:", JSON.stringify(req.body, null, 2));
   console.log("=======================");
-  handleMcp(req, res);
+
+  const result = handleMcp(req, res);
+
+  console.log("=== Response sent ===");
+  console.log("Status:", res.statusCode);
+  console.log("=====================");
+
+  return result;
 });
 
 app.get("/yes", (_req, res) => res.json({ answer: "yes" }));
@@ -196,10 +203,19 @@ function handleMcp(req, res) {
     }
 
     if (method === "initialize") {
+      // クライアントが要求するprotocolVersionを確認
+      const requestedVersion = params?.protocolVersion || "2025-03-26";
+      // サポートするバージョン（最新を優先）
+      const supportedVersions = ["2025-06-18", "2025-03-26"];
+      // クライアントが要求したバージョンをサポートしているか確認
+      const useVersion = supportedVersions.includes(requestedVersion)
+        ? requestedVersion
+        : "2025-03-26"; // デフォルトは2025-03-26
+
       responses.push(
         rpcResult(id, {
-          protocolVersion: "2025-03-26",
-          serverInfo: { name: "yesno-mcp", version: "2.7.2" },
+          protocolVersion: useVersion,
+          serverInfo: { name: "yesno-mcp", version: "2.7.3" },
           capabilities: { tools: { list: true, call: true } },
         })
       );
@@ -289,6 +305,6 @@ app.use((req, res) => {
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
   console.log(
-    `✅ YesNo MCP Server v2.7.2 (Streamable HTTP POST / + notification fix) listening on ${PORT}`
+    `✅ YesNo MCP Server v2.7.3 (MCP 2025-06-18 support) listening on ${PORT}`
   );
 });
