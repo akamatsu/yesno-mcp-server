@@ -1,8 +1,7 @@
 // server.js
 // YesNo MCP Server — crypto-random yes/no + MCP(Streamable HTTP via SSE)
-// v2.5.1: Add trailing slash support for all endpoints (/sse/, /mcp/),
-//         Fix Streamable HTTP transport (GET /mcp no longer sends endpoint event),
-//         separate legacy SSE handler (/sse) from Streamable HTTP handler (/mcp),
+// v2.6.0: Disable GET /mcp (405), ChatGPT uses POST only for Streamable HTTP,
+//         trailing slash support (/sse/, /mcp/), legacy SSE at /sse,
 //         CORS preflight, initialize(), fast keep-alive, flushHeaders
 "use strict";
 
@@ -49,9 +48,9 @@ app.get("/", (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
     name: "YesNo MCP Server",
-    version: "2.5.1",
+    version: "2.6.0",
     mode: "crypto-random",
-    transport: "streamable-http (SSE + JSON-RPC)",
+    transport: "streamable-http (POST only)",
     endpoints: {
       "/healthz": "GET — health check",
       "/yes": 'GET — returns {"answer":"yes"}',
@@ -177,7 +176,7 @@ function handleMcp(req, res) {
       responses.push(
         rpcResult(id, {
           protocolVersion: "2025-03-26",
-          serverInfo: { name: "yesno-mcp", version: "2.5.1" },
+          serverInfo: { name: "yesno-mcp", version: "2.6.0" },
           capabilities: { tools: { list: true, call: true } },
         })
       );
@@ -239,9 +238,14 @@ function handleMcp(req, res) {
   res.json(Array.isArray(body) ? responses : responses[0]);
 }
 
-// 正式エンドポイント（Streamable HTTP transport: GET + POST対応、末尾スラッシュあり/なし両対応）
-app.get("/mcp", handleSSE_Streamable);  // SSEストリーム（endpointイベントなし）
-app.get("/mcp/", handleSSE_Streamable);
+// 正式エンドポイント（Streamable HTTP transport: POST のみ、ChatGPT互換性）
+// GET は 405 Method Not Allowed を返す（ChatGPT は POST のみ使用するため）
+app.get("/mcp", (req, res) => {
+  res.status(405).json({ error: "Method Not Allowed", message: "Use POST for JSON-RPC requests" });
+});
+app.get("/mcp/", (req, res) => {
+  res.status(405).json({ error: "Method Not Allowed", message: "Use POST for JSON-RPC requests" });
+});
 app.post("/mcp", handleMcp); // JSON-RPC処理
 app.post("/mcp/", handleMcp);
 // 互換：一部クライアントが /sse に POST してくる挙動を吸収
@@ -257,6 +261,6 @@ app.use((req, res) => {
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
   console.log(
-    `✅ YesNo MCP Server v2.5.1 (Streamable HTTP + trailing slash support) listening on ${PORT}`
+    `✅ YesNo MCP Server v2.6.0 (Streamable HTTP POST only, ChatGPT compatible) listening on ${PORT}`
   );
 });
