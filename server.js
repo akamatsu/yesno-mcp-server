@@ -1,5 +1,5 @@
 // server.js
-// YesNo MCP Server — crypto-random yes/no + MCP(SSE) minimal
+// YesNo MCP Server — crypto-random yes/no + MCP(SSE) compliant version with flushHeaders
 "use strict";
 
 const express = require("express");
@@ -9,11 +9,13 @@ const morgan = require("morgan");
 const { randomInt } = require("crypto");
 
 const app = express();
+
+// --- Middleware setup ---
 app.use(helmet());
 app.use(express.json());
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN || "*",
+    origin: process.env.CORS_ORIGIN || "*", // Allow all origins (safe for demo)
   })
 );
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
@@ -23,7 +25,7 @@ function yesNoRandom() {
   return randomInt(0, 2) === 0 ? "yes" : "no";
 }
 
-// --- Health & simple endpoints (従来どおり) ---
+// --- Health and simple REST endpoints ---
 app.get("/healthz", (_req, res) => {
   res.status(200).json({ status: "ok", uptime: process.uptime() });
 });
@@ -31,7 +33,7 @@ app.get("/healthz", (_req, res) => {
 app.get("/", (_req, res) => {
   res.json({
     name: "YesNo MCP Server",
-    version: "1.2.0",
+    version: "1.3.0",
     mode: "crypto-random",
     endpoints: {
       "/healthz": "GET — health check",
@@ -57,18 +59,17 @@ app.get("/answer", (req, res) => {
   res.json({ answer: yesNoRandom(), prompt });
 });
 
-/**
- * --- MCP (SSE) endpoint ---
- * ChatGPTはここにSSEで接続し、最初の「tools」イベントで提供ツールを把握します。
- * 以後の実行は /invocations に対してHTTPで行います（最小実装）。
- */
+// --- MCP (SSE) endpoint ---
 app.get("/sse", (req, res) => {
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  // ツール定義（最小構成）
+  // Immediately flush headers to avoid buffering delay (Render timeout fix)
+  if (res.flushHeaders) res.flushHeaders();
+
+  // Tool definition event for ChatGPT MCP handshake
   const toolsEvent = {
     type: "tools",
     data: [
@@ -86,7 +87,6 @@ app.get("/sse", (req, res) => {
           required: ["prompt"],
           additionalProperties: false,
         },
-        // ChatGPT側がこのツールをどう呼ぶかのヒント
         invocation: {
           method: "POST",
           url: "/invocations",
@@ -95,11 +95,11 @@ app.get("/sse", (req, res) => {
     ],
   };
 
-  // 先頭に1回送る（SSEフォーマット: event: <name>\n data: <json>\n\n）
+  // Send tools definition
   res.write(`event: tools\n`);
   res.write(`data: ${JSON.stringify(toolsEvent)}\n\n`);
 
-  // Keep-alive（30秒ごとにコメント行）
+  // Keep alive (Render free plan sleeps if no ping)
   const keepAlive = setInterval(() => {
     res.write(`: ping ${Date.now()}\n\n`);
   }, 30000);
@@ -108,29 +108,27 @@ app.get("/sse", (req, res) => {
     clearInterval(keepAlive);
     try {
       res.end();
-    } catch {}
+    } catch (_) {}
   });
 });
 
-/**
- * --- MCP tool invocation endpoint ---
- * Body: { "name": "yesno", "arguments": { "prompt": "..." } }
- * Resp: { "answer": "yes"|"no", "prompt": "..." }
- */
+// --- MCP invocation endpoint ---
 app.post("/invocations", (req, res) => {
   const { name, arguments: args } = req.body || {};
-  if (name !== "yesno") return res.status(400).json({ error: "Unknown tool" });
+  if (name !== "yesno")
+    return res.status(400).json({ error: "Unknown tool", name });
 
   const prompt = (args?.prompt || "").toString();
-  return res.json({ answer: yesNoRandom(), prompt });
+  res.json({ answer: yesNoRandom(), prompt });
 });
 
-// 404 fallback（必ず最後）
+// --- 404 fallback ---
 app.use((req, res) => {
   res.status(404).json({ error: "Not Found", path: req.path });
 });
 
+// --- Start server ---
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
-  console.log(`YesNo MCP Server (crypto-random + SSE) listening on ${PORT}`);
+  console.log(`✅ YesNo MCP Server v1.3.0 (crypto-random + SSE + flushHeaders) listening on ${PORT}`);
 });
