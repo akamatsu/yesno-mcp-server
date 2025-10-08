@@ -1,6 +1,7 @@
 // server.js
 // YesNo MCP Server — crypto-random yes/no + MCP(Streamable HTTP via SSE)
-// v2.5.0: Fix Streamable HTTP transport (GET /mcp no longer sends endpoint event),
+// v2.5.1: Add trailing slash support for all endpoints (/sse/, /mcp/),
+//         Fix Streamable HTTP transport (GET /mcp no longer sends endpoint event),
 //         separate legacy SSE handler (/sse) from Streamable HTTP handler (/mcp),
 //         CORS preflight, initialize(), fast keep-alive, flushHeaders
 "use strict";
@@ -48,7 +49,7 @@ app.get("/", (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
     name: "YesNo MCP Server",
-    version: "2.5.0",
+    version: "2.5.1",
     mode: "crypto-random",
     transport: "streamable-http (SSE + JSON-RPC)",
     endpoints: {
@@ -140,8 +141,9 @@ function handleSSE_Streamable(req, res) {
   });
 }
 
-// 旧SSEエンドポイント（互換性維持）
+// 旧SSEエンドポイント（互換性維持、末尾スラッシュあり/なし両対応）
 app.get("/sse", handleSSE_Legacy);
+app.get("/sse/", handleSSE_Legacy);
 
 // ---------- JSON-RPC helpers ----------
 function rpcResult(id, result) {
@@ -175,7 +177,7 @@ function handleMcp(req, res) {
       responses.push(
         rpcResult(id, {
           protocolVersion: "2025-03-26",
-          serverInfo: { name: "yesno-mcp", version: "2.5.0" },
+          serverInfo: { name: "yesno-mcp", version: "2.5.1" },
           capabilities: { tools: { list: true, call: true } },
         })
       );
@@ -237,9 +239,11 @@ function handleMcp(req, res) {
   res.json(Array.isArray(body) ? responses : responses[0]);
 }
 
-// 正式エンドポイント（Streamable HTTP transport: GET + POST対応）
+// 正式エンドポイント（Streamable HTTP transport: GET + POST対応、末尾スラッシュあり/なし両対応）
 app.get("/mcp", handleSSE_Streamable);  // SSEストリーム（endpointイベントなし）
+app.get("/mcp/", handleSSE_Streamable);
 app.post("/mcp", handleMcp); // JSON-RPC処理
+app.post("/mcp/", handleMcp);
 // 互換：一部クライアントが /sse に POST してくる挙動を吸収
 app.post("/sse", handleMcp);
 app.post("/sse/", handleMcp);
@@ -253,6 +257,6 @@ app.use((req, res) => {
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
   console.log(
-    `✅ YesNo MCP Server v2.5.0 (Streamable HTTP: GET /mcp=SSE only, POST /mcp=JSON-RPC) listening on ${PORT}`
+    `✅ YesNo MCP Server v2.5.1 (Streamable HTTP + trailing slash support) listening on ${PORT}`
   );
 });
