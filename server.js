@@ -1,7 +1,7 @@
 // server.js
 // YesNo MCP Server — crypto-random yes/no + MCP(Streamable HTTP via SSE)
-// v2.7.1: Add request logging for debugging ChatGPT connection issues,
-//         POST / endpoint for ChatGPT, trailing slash support,
+// v2.7.2: Fix notification handling (202 Accepted for notifications/initialized),
+//         add request logging, POST / endpoint for ChatGPT, trailing slash support,
 //         legacy SSE at /sse, CORS preflight, initialize(), fast keep-alive
 "use strict";
 
@@ -49,7 +49,7 @@ app.get("/", (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
     name: "YesNo MCP Server",
-    version: "2.7.1",
+    version: "2.7.2",
     mode: "crypto-random",
     transport: "streamable-http (POST /)",
     endpoints: {
@@ -173,8 +173,20 @@ function handleMcp(req, res) {
 
   for (const msg of requests) {
     const { id = null, method, params } = msg || {};
+
+    // idがnullまたはundefinedの場合はnotification（レスポンス不要）
+    const isNotification = id === null || id === undefined;
+
     if (!method) {
-      responses.push(rpcError(id, -32600, "Invalid Request"));
+      if (!isNotification) {
+        responses.push(rpcError(id, -32600, "Invalid Request"));
+      }
+      continue;
+    }
+
+    // notifications/initialized などの通知は無視（レスポンス不要）
+    if (isNotification) {
+      console.log(`  [Notification] ${method} - no response needed`);
       continue;
     }
 
@@ -187,7 +199,7 @@ function handleMcp(req, res) {
       responses.push(
         rpcResult(id, {
           protocolVersion: "2025-03-26",
-          serverInfo: { name: "yesno-mcp", version: "2.7.1" },
+          serverInfo: { name: "yesno-mcp", version: "2.7.2" },
           capabilities: { tools: { list: true, call: true } },
         })
       );
@@ -246,6 +258,11 @@ function handleMcp(req, res) {
     responses.push(rpcError(id, -32601, "Method not found"));
   }
 
+  // 純粋なnotificationの場合は202 Acceptedを返す（レスポンスなし）
+  if (responses.length === 0) {
+    return res.status(202).end();
+  }
+
   res.json(Array.isArray(body) ? responses : responses[0]);
 }
 
@@ -272,6 +289,6 @@ app.use((req, res) => {
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
   console.log(
-    `✅ YesNo MCP Server v2.7.1 (Streamable HTTP POST / with logging) listening on ${PORT}`
+    `✅ YesNo MCP Server v2.7.2 (Streamable HTTP POST / + notification fix) listening on ${PORT}`
   );
 });
