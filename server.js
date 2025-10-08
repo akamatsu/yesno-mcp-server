@@ -1,6 +1,6 @@
 // server.js
 // YesNo MCP Server — crypto-random yes/no + MCP(Streamable HTTP via SSE)
-// v2.1.0: endpoint=absolute URL, initialize(), faster keep-alive, flushHeaders
+// v2.2.0: CORS preflight (OPTIONS), endpoint absolute URL, initialize(), fast keep-alive, flushHeaders
 "use strict";
 
 const express = require("express");
@@ -11,22 +11,28 @@ const { randomInt } = require("crypto");
 
 const app = express();
 
-// --- Middleware ---
+// ---------- Middleware ----------
 app.use(helmet());
 app.use(express.json({ limit: "256kb" }));
-app.use(
-  cors({
-    origin: process.env.CORS_ORIGIN || "*",
-  })
-);
+
+// CORS: 明示的なプリフライト対応（重要）
+const corsOptions = {
+  origin: process.env.CORS_ORIGIN || "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+  maxAge: 600, // 秒: プリフライト結果を10分キャッシュ
+};
+app.options("*", cors(corsOptions)); // すべてのルートでOPTIONSを許可
+app.use(cors(corsOptions));
+
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
-// --- Utility: crypto-random yes/no ---
+// ---------- Utility ----------
 function yesNoRandom() {
   return randomInt(0, 2) === 0 ? "yes" : "no";
 }
 
-// --- Health & simple HTTP endpoints (for debugging/monitoring) ---
+// ---------- Health & simple REST ----------
 app.get("/healthz", (_req, res) => {
   res.status(200).json({ status: "ok", uptime: process.uptime() });
 });
@@ -35,7 +41,7 @@ app.get("/", (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
     name: "YesNo MCP Server",
-    version: "2.1.0",
+    version: "2.2.0",
     mode: "crypto-random",
     transport: "streamable-http (SSE + JSON-RPC)",
     endpoints: {
@@ -63,30 +69,30 @@ app.get("/answer", (req, res) => {
   res.json({ answer: yesNoRandom(), prompt });
 });
 
-// --- MCP: SSE connection (announce JSON-RPC POST endpoint) ---
+// ---------- MCP: SSE (announce JSON-RPC POST endpoint) ----------
 app.get("/sse", (req, res) => {
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  // Flush immediately so client receives headers & first event without buffering
+  // すぐにヘッダーを送出（Renderのバッファ遅延対策）
   if (res.flushHeaders) res.flushHeaders();
 
-  // Build absolute endpoint URL (robust for custom domains)
+  // 絶対URLのエンドポイント（PUBLIC_BASE_URLがあれば優先）
   const base =
     process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
   const endpointEvent = {
-    uri: `${base}/mcp`, // absolute URL
+    uri: `${base}/mcp`,
     protocol: "jsonrpc-2.0",
     version: "2025-03-26",
   };
 
-  // Send endpoint announcement (required by Streamable HTTP transport)
+  // 必須: endpoint イベントを即送信
   res.write(`event: endpoint\n`);
   res.write(`data: ${JSON.stringify(endpointEvent)}\n\n`);
 
-  // Keep-alive (short interval to help clients behind proxies)
+  // keep-alive（短めにしてプロキシ越しでも安定させる）
   const keepAlive = setInterval(() => {
     res.write(`: ping ${Date.now()}\n\n`);
   }, 15000);
@@ -99,7 +105,7 @@ app.get("/sse", (req, res) => {
   });
 });
 
-// --- Minimal JSON-RPC helpers ---
+// ---------- JSON-RPC helpers ----------
 function rpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
 }
@@ -107,7 +113,7 @@ function rpcError(id, code, message) {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-// --- MCP: JSON-RPC endpoint (/mcp) ---
+// ---------- MCP: JSON-RPC (/mcp) ----------
 // Supports: initialize, ping, tools/list, tools/call
 app.post("/mcp", (req, res) => {
   const body = req.body;
@@ -128,12 +134,12 @@ app.post("/mcp", (req, res) => {
       continue;
     }
 
-    // Many clients call initialize first; respond positively.
+    // クライアントが最初に呼ぶことが多い
     if (method === "initialize") {
       responses.push(
         rpcResult(id, {
           protocolVersion: "2025-03-26",
-          serverInfo: { name: "yesno-mcp", version: "2.1.0" },
+          serverInfo: { name: "yesno-mcp", version: "2.2.0" },
           capabilities: { tools: { list: true, call: true } },
         })
       );
@@ -176,7 +182,6 @@ app.post("/mcp", (req, res) => {
         const prompt = (params?.arguments?.prompt || "").toString();
         const answer = yesNoRandom();
 
-        // Return MCP-style text content
         const contentText = JSON.stringify({ answer, prompt });
         responses.push(
           rpcResult(id, {
@@ -196,15 +201,15 @@ app.post("/mcp", (req, res) => {
   res.json(Array.isArray(body) ? responses : responses[0]);
 });
 
-// --- 404 fallback ---
+// ---------- 404 fallback ----------
 app.use((req, res) => {
   res.status(404).json({ error: "Not Found", path: req.path });
 });
 
-// --- Start server ---
+// ---------- Start ----------
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
   console.log(
-    `✅ YesNo MCP Server v2.1.0 (SSE+JSON-RPC, crypto-random) listening on ${PORT}`
+    `✅ YesNo MCP Server v2.2.0 (SSE+JSON-RPC, crypto-random, CORS preflight) listening on ${PORT}`
   );
 });
