@@ -1,6 +1,6 @@
 // server.js
-// YesNo MCP Server — crypto-random yes/no + MCP (Streamable HTTP via SSE)
-// Works on Render Free. Sends `endpoint` SSE event and handles JSON-RPC at /mcp.
+// YesNo MCP Server — crypto-random yes/no + MCP(Streamable HTTP via SSE)
+// v2.1.0: endpoint=absolute URL, initialize(), faster keep-alive, flushHeaders
 "use strict";
 
 const express = require("express");
@@ -26,15 +26,16 @@ function yesNoRandom() {
   return randomInt(0, 2) === 0 ? "yes" : "no";
 }
 
-// --- Health & simple HTTP (そのまま残します) ---
+// --- Health & simple HTTP endpoints (for debugging/monitoring) ---
 app.get("/healthz", (_req, res) => {
   res.status(200).json({ status: "ok", uptime: process.uptime() });
 });
 
-app.get("/", (_req, res) => {
+app.get("/", (req, res) => {
+  const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
     name: "YesNo MCP Server",
-    version: "2.0.0",
+    version: "2.1.0",
     mode: "crypto-random",
     transport: "streamable-http (SSE + JSON-RPC)",
     endpoints: {
@@ -44,12 +45,13 @@ app.get("/", (_req, res) => {
       "/answer?prompt=...":
         'GET — returns {"answer":"yes"|"no"} (cryptographically random; prompt ignored)',
       "/sse": "GET — MCP connection stream (SSE). Emits `endpoint`.",
-      "/mcp": "POST — MCP JSON-RPC endpoint (tools.list / tools.call)",
+      "/mcp": "POST — MCP JSON-RPC endpoint (initialize / tools.list / tools.call)",
     },
     env: {
       PORT: process.env.PORT || 3000,
       NODE_ENV: process.env.NODE_ENV || "development",
       CORS_ORIGIN: process.env.CORS_ORIGIN || "*",
+      PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL || origin,
     },
   });
 });
@@ -61,7 +63,7 @@ app.get("/answer", (req, res) => {
   res.json({ answer: yesNoRandom(), prompt });
 });
 
-// --- MCP: SSE connection (must immediately announce POST endpoint) ---
+// --- MCP: SSE connection (announce JSON-RPC POST endpoint) ---
 app.get("/sse", (req, res) => {
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -71,32 +73,33 @@ app.get("/sse", (req, res) => {
   // Flush immediately so client receives headers & first event without buffering
   if (res.flushHeaders) res.flushHeaders();
 
-  /**
-   * Per Streamable HTTP + SSE, the server should emit an `endpoint` event with
-   * the relative URI the client should POST JSON-RPC messages to.
-   * (See MCP transport docs; client expects this to proceed.) 
-   */
+  // Build absolute endpoint URL (robust for custom domains)
+  const base =
+    process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
   const endpointEvent = {
-    uri: "/mcp",               // relative path to JSON-RPC POST
-    protocol: "jsonrpc-2.0",   // indicates JSON-RPC 2.0
-    version: "2025-03-26"      // protocol rev (informational)
+    uri: `${base}/mcp`, // absolute URL
+    protocol: "jsonrpc-2.0",
+    version: "2025-03-26",
   };
 
+  // Send endpoint announcement (required by Streamable HTTP transport)
   res.write(`event: endpoint\n`);
   res.write(`data: ${JSON.stringify(endpointEvent)}\n\n`);
 
-  // keep-alive pings so the connection stays open
+  // Keep-alive (short interval to help clients behind proxies)
   const keepAlive = setInterval(() => {
     res.write(`: ping ${Date.now()}\n\n`);
-  }, 30000);
+  }, 15000);
 
   req.on("close", () => {
     clearInterval(keepAlive);
-    try { res.end(); } catch (_) {}
+    try {
+      res.end();
+    } catch (_) {}
   });
 });
 
-// --- Minimal JSON-RPC helper ---
+// --- Minimal JSON-RPC helpers ---
 function rpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
 }
@@ -104,18 +107,12 @@ function rpcError(id, code, message) {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-/**
- * --- MCP: JSON-RPC endpoint ---
- * Accepts single or batch JSON-RPC requests.
- * Implements:
- *  - "tools/list" → returns yesno tool schema
- *  - "tools/call" → executes yesno and returns MCP-style text content
- */
+// --- MCP: JSON-RPC endpoint (/mcp) ---
+// Supports: initialize, ping, tools/list, tools/call
 app.post("/mcp", (req, res) => {
   const body = req.body;
   const now = Date.now();
 
-  // Allow both single-object and array batch
   const requests = Array.isArray(body) ? body : [body];
   const responses = [];
 
@@ -131,8 +128,19 @@ app.post("/mcp", (req, res) => {
       continue;
     }
 
+    // Many clients call initialize first; respond positively.
+    if (method === "initialize") {
+      responses.push(
+        rpcResult(id, {
+          protocolVersion: "2025-03-26",
+          serverInfo: { name: "yesno-mcp", version: "2.1.0" },
+          capabilities: { tools: { list: true, call: true } },
+        })
+      );
+      continue;
+    }
+
     if (method === "tools/list") {
-      // Minimal MCP tool schema (name + JSON schema for args)
       responses.push(
         rpcResult(id, {
           tools: [
@@ -168,10 +176,7 @@ app.post("/mcp", (req, res) => {
         const prompt = (params?.arguments?.prompt || "").toString();
         const answer = yesNoRandom();
 
-        /**
-         * Return content as MCP text blocks.
-         * Many clients expect { content: [{ type: "text", text: "..." }] }.
-         */
+        // Return MCP-style text content
         const contentText = JSON.stringify({ answer, prompt });
         responses.push(
           rpcResult(id, {
@@ -185,11 +190,9 @@ app.post("/mcp", (req, res) => {
       continue;
     }
 
-    // Not implemented
     responses.push(rpcError(id, -32601, "Method not found"));
   }
 
-  // If original request was a single object, return single object
   res.json(Array.isArray(body) ? responses : responses[0]);
 });
 
@@ -201,5 +204,7 @@ app.use((req, res) => {
 // --- Start server ---
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ YesNo MCP Server v2.0.0 (SSE endpoint + JSON-RPC) on ${PORT}`);
+  console.log(
+    `✅ YesNo MCP Server v2.1.0 (SSE+JSON-RPC, crypto-random) listening on ${PORT}`
+  );
 });
