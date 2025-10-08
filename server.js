@@ -1,6 +1,7 @@
 // server.js
 // YesNo MCP Server — crypto-random yes/no + MCP(Streamable HTTP via SSE)
-// v2.2.0: CORS preflight (OPTIONS), endpoint absolute URL, initialize(), fast keep-alive, flushHeaders
+// v2.3.0: endpoint data = plain URL string, accept POST /sse as alias of /mcp,
+//         CORS preflight, initialize(), fast keep-alive, flushHeaders
 "use strict";
 
 const express = require("express");
@@ -15,14 +16,14 @@ const app = express();
 app.use(helmet());
 app.use(express.json({ limit: "256kb" }));
 
-// CORS: 明示的なプリフライト対応（重要）
+// CORS: 明示プリフライト（重要）
 const corsOptions = {
   origin: process.env.CORS_ORIGIN || "*",
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "Accept"],
-  maxAge: 600, // 秒: プリフライト結果を10分キャッシュ
+  maxAge: 600,
 };
-app.options("*", cors(corsOptions)); // すべてのルートでOPTIONSを許可
+app.options("*", cors(corsOptions));
 app.use(cors(corsOptions));
 
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
@@ -41,7 +42,7 @@ app.get("/", (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
     name: "YesNo MCP Server",
-    version: "2.2.0",
+    version: "2.3.0",
     mode: "crypto-random",
     transport: "streamable-http (SSE + JSON-RPC)",
     endpoints: {
@@ -50,8 +51,9 @@ app.get("/", (req, res) => {
       "/no": 'GET — returns {"answer":"no"}',
       "/answer?prompt=...":
         'GET — returns {"answer":"yes"|"no"} (cryptographically random; prompt ignored)',
-      "/sse": "GET — MCP connection stream (SSE). Emits `endpoint`.",
+      "/sse": "GET — MCP connection stream (SSE). Emits `endpoint` (plain URL).",
       "/mcp": "POST — MCP JSON-RPC endpoint (initialize / tools.list / tools.call)",
+      "/sse (POST)": "Alias of /mcp to absorb client differences",
     },
     env: {
       PORT: process.env.PORT || 3000,
@@ -69,30 +71,31 @@ app.get("/answer", (req, res) => {
   res.json({ answer: yesNoRandom(), prompt });
 });
 
-// ---------- MCP: SSE (announce JSON-RPC POST endpoint) ----------
+// ---------- MCP: SSE (announce JSON-RPC POST endpoint as *plain URL string*) ----------
 app.get("/sse", (req, res) => {
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
 
-  // すぐにヘッダーを送出（Renderのバッファ遅延対策）
+  // すぐに送出（Renderのバッファ遅延対策）
   if (res.flushHeaders) res.flushHeaders();
 
-  // 絶対URLのエンドポイント（PUBLIC_BASE_URLがあれば優先）
+  // 絶対URLを生成（PUBLIC_BASE_URLがあれば優先）
   const base =
     process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
-  const endpointEvent = {
-    uri: `${base}/mcp`,
-    protocol: "jsonrpc-2.0",
-    version: "2025-03-26",
-  };
+  const endpointUri = `${base}/mcp`; // ← プレーンURL文字列
 
-  // 必須: endpoint イベントを即送信
+  // クライアントは data を URL 文字列として期待する実装があるため JSON では送らない
   res.write(`event: endpoint\n`);
-  res.write(`data: ${JSON.stringify(endpointEvent)}\n\n`);
+  res.write(`data: ${endpointUri}\n\n`);
 
-  // keep-alive（短めにしてプロキシ越しでも安定させる）
+  // 一部クライアントの取りこぼし対策（任意）：同じ内容をもう一度送る
+  res.write(`event: endpoint\n`);
+  res.write(`data: ${endpointUri}\n\n`);
+
+  // 短めのKeep-alive（プロキシ越し対策）
   const keepAlive = setInterval(() => {
     res.write(`: ping ${Date.now()}\n\n`);
   }, 15000);
@@ -113,9 +116,8 @@ function rpcError(id, code, message) {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-// ---------- MCP: JSON-RPC (/mcp) ----------
-// Supports: initialize, ping, tools/list, tools/call
-app.post("/mcp", (req, res) => {
+// 共有ハンドラ：/mcp と /sse(POST) の両方から呼ぶ
+function handleMcp(req, res) {
   const body = req.body;
   const now = Date.now();
 
@@ -134,12 +136,11 @@ app.post("/mcp", (req, res) => {
       continue;
     }
 
-    // クライアントが最初に呼ぶことが多い
     if (method === "initialize") {
       responses.push(
         rpcResult(id, {
           protocolVersion: "2025-03-26",
-          serverInfo: { name: "yesno-mcp", version: "2.2.0" },
+          serverInfo: { name: "yesno-mcp", version: "2.3.0" },
           capabilities: { tools: { list: true, call: true } },
         })
       );
@@ -199,7 +200,13 @@ app.post("/mcp", (req, res) => {
   }
 
   res.json(Array.isArray(body) ? responses : responses[0]);
-});
+}
+
+// 正式エンドポイント
+app.post("/mcp", handleMcp);
+// 互換：一部クライアントが /sse に POST してくる挙動を吸収
+app.post("/sse", handleMcp);
+app.post("/sse/", handleMcp);
 
 // ---------- 404 fallback ----------
 app.use((req, res) => {
@@ -210,6 +217,6 @@ app.use((req, res) => {
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
   console.log(
-    `✅ YesNo MCP Server v2.2.0 (SSE+JSON-RPC, crypto-random, CORS preflight) listening on ${PORT}`
+    `✅ YesNo MCP Server v2.3.0 (SSE+JSON-RPC, endpoint URL string, /sse POST alias) listening on ${PORT}`
   );
 });
