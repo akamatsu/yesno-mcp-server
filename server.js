@@ -1,8 +1,8 @@
 // server.js
 // YesNo MCP Server — crypto-random yes/no + MCP(Streamable HTTP via SSE)
-// v2.6.0: Disable GET /mcp (405), ChatGPT uses POST only for Streamable HTTP,
-//         trailing slash support (/sse/, /mcp/), legacy SSE at /sse,
-//         CORS preflight, initialize(), fast keep-alive, flushHeaders
+// v2.7.0: Add POST / endpoint for ChatGPT (sends requests to root path),
+//         Disable GET /mcp (405), trailing slash support (/sse/, /mcp/),
+//         legacy SSE at /sse, CORS preflight, initialize(), fast keep-alive
 "use strict";
 
 const express = require("express");
@@ -44,22 +44,23 @@ app.post("/healthz", (_req, res) => {
   res.status(200).json({ status: "ok", method: "POST", uptime: process.uptime() });
 });
 
+// ルートパス: GET はサーバー情報、POST はMCP JSON-RPC処理（ChatGPT互換性）
 app.get("/", (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
     name: "YesNo MCP Server",
-    version: "2.6.0",
+    version: "2.7.0",
     mode: "crypto-random",
-    transport: "streamable-http (POST only)",
+    transport: "streamable-http (POST /)",
     endpoints: {
+      "/": "POST — MCP JSON-RPC endpoint (ChatGPT compatible)",
       "/healthz": "GET — health check",
       "/yes": 'GET — returns {"answer":"yes"}',
       "/no": 'GET — returns {"answer":"no"}',
       "/answer?prompt=...":
         'GET — returns {"answer":"yes"|"no"} (cryptographically random; prompt ignored)',
       "/sse": "GET — MCP connection stream (SSE, legacy). Emits `endpoint` (plain URL).",
-      "/mcp": "GET+POST — Streamable HTTP transport (GET: SSE, POST: JSON-RPC)",
-      "/sse (POST)": "Alias of /mcp to absorb client differences",
+      "/mcp": "POST — Streamable HTTP transport (JSON-RPC)",
     },
     env: {
       PORT: process.env.PORT || 3000,
@@ -69,6 +70,9 @@ app.get("/", (req, res) => {
     },
   });
 });
+
+// ルートパスでMCP JSON-RPC処理を受け付ける（ChatGPT互換性）
+app.post("/", handleMcp);
 
 app.get("/yes", (_req, res) => res.json({ answer: "yes" }));
 app.get("/no", (_req, res) => res.json({ answer: "no" }));
@@ -176,7 +180,7 @@ function handleMcp(req, res) {
       responses.push(
         rpcResult(id, {
           protocolVersion: "2025-03-26",
-          serverInfo: { name: "yesno-mcp", version: "2.6.0" },
+          serverInfo: { name: "yesno-mcp", version: "2.7.0" },
           capabilities: { tools: { list: true, call: true } },
         })
       );
@@ -261,6 +265,6 @@ app.use((req, res) => {
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
   console.log(
-    `✅ YesNo MCP Server v2.6.0 (Streamable HTTP POST only, ChatGPT compatible) listening on ${PORT}`
+    `✅ YesNo MCP Server v2.7.0 (Streamable HTTP POST / for ChatGPT) listening on ${PORT}`
   );
 });
