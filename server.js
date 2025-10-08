@@ -1,7 +1,7 @@
 // server.js
 // YesNo MCP Server — crypto-random yes/no + MCP(Streamable HTTP via SSE)
-// v2.4.0: Full Streamable HTTP transport support (GET+POST /mcp),
-//         endpoint data = plain URL string, accept POST /sse as alias of /mcp,
+// v2.5.0: Fix Streamable HTTP transport (GET /mcp no longer sends endpoint event),
+//         separate legacy SSE handler (/sse) from Streamable HTTP handler (/mcp),
 //         CORS preflight, initialize(), fast keep-alive, flushHeaders
 "use strict";
 
@@ -48,7 +48,7 @@ app.get("/", (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({
     name: "YesNo MCP Server",
-    version: "2.4.0",
+    version: "2.5.0",
     mode: "crypto-random",
     transport: "streamable-http (SSE + JSON-RPC)",
     endpoints: {
@@ -77,9 +77,9 @@ app.get("/answer", (req, res) => {
   res.json({ answer: yesNoRandom(), prompt });
 });
 
-// ---------- MCP: SSE (announce JSON-RPC POST endpoint as *plain URL string*) ----------
-// SSE送信の共通ハンドラ（Streamable HTTP transport対応）
-function handleSSE(req, res) {
+// ---------- MCP: SSE handlers ----------
+// 旧HTTP+SSE transport用（/sse用、endpointイベントを送信）
+function handleSSE_Legacy(req, res) {
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
@@ -115,8 +115,33 @@ function handleSSE(req, res) {
   });
 }
 
+// 新Streamable HTTP transport用（/mcp GET用、endpointイベントは送らない）
+function handleSSE_Streamable(req, res) {
+  // SSE headers
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
+
+  // すぐに送出（Renderのバッファ遅延対策）
+  if (res.flushHeaders) res.flushHeaders();
+
+  // Streamable HTTP transportではendpointイベントは送らず、keep-aliveのみ
+  // サーバーからの通知がある場合のみJSON-RPCメッセージを送信
+  const keepAlive = setInterval(() => {
+    res.write(`: ping ${Date.now()}\n\n`);
+  }, 15000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    try {
+      res.end();
+    } catch (_) {}
+  });
+}
+
 // 旧SSEエンドポイント（互換性維持）
-app.get("/sse", handleSSE);
+app.get("/sse", handleSSE_Legacy);
 
 // ---------- JSON-RPC helpers ----------
 function rpcResult(id, result) {
@@ -150,7 +175,7 @@ function handleMcp(req, res) {
       responses.push(
         rpcResult(id, {
           protocolVersion: "2025-03-26",
-          serverInfo: { name: "yesno-mcp", version: "2.4.0" },
+          serverInfo: { name: "yesno-mcp", version: "2.5.0" },
           capabilities: { tools: { list: true, call: true } },
         })
       );
@@ -213,7 +238,7 @@ function handleMcp(req, res) {
 }
 
 // 正式エンドポイント（Streamable HTTP transport: GET + POST対応）
-app.get("/mcp", handleSSE);  // SSEストリーム（Streamable HTTP transport）
+app.get("/mcp", handleSSE_Streamable);  // SSEストリーム（endpointイベントなし）
 app.post("/mcp", handleMcp); // JSON-RPC処理
 // 互換：一部クライアントが /sse に POST してくる挙動を吸収
 app.post("/sse", handleMcp);
@@ -228,6 +253,6 @@ app.use((req, res) => {
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
   console.log(
-    `✅ YesNo MCP Server v2.4.0 (Streamable HTTP: GET+POST /mcp, SSE+JSON-RPC) listening on ${PORT}`
+    `✅ YesNo MCP Server v2.5.0 (Streamable HTTP: GET /mcp=SSE only, POST /mcp=JSON-RPC) listening on ${PORT}`
   );
 });
